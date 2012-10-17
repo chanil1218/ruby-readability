@@ -11,16 +11,18 @@ module Readability
       :weight_classes             => true,
       :clean_conditionally        => true,
       :remove_empty_nodes         => true,
+      :make_absolute_url          => true,
       :min_image_width            => 130,
       :min_image_height           => 80,
       :ignore_image_format        => []
     }.freeze
 
-    attr_accessor :options, :html, :best_candidate, :candidates, :best_candidate_has_image
+    attr_accessor :options, :html, :best_candidate, :candidates, :best_candidate_has_image, :url
 
-    def initialize(input, options = {})
+    def initialize(input, url = nil, options = {})
       @options = DEFAULT_OPTIONS.merge(options)
       @input = input
+      @url = url
 
       if RUBY_VERSION =~ /^1\.9\./ && !@options[:encoding]
         @input = GuessHtmlEncoding.encode(@input, @options[:html_headers]) unless @options[:do_not_guess_encoding]
@@ -39,15 +41,16 @@ module Readability
       @html.css("script, style").each { |i| i.remove }
       remove_unlikely_candidates! if @remove_unlikely_candidates
       transform_misused_divs_into_paragraphs!
+      make_absolute_url! if @make_absolute_url
       
       @candidates     = score_paragraphs(options[:min_text_length])
       @best_candidate = select_best_candidate(@candidates)
     end
 
     def make_html
-      @html = Nokogiri::HTML(@input, nil, @options[:encoding])
+      @html = Nokogiri::HTML(@input, @url, @options[:encoding])
       # In case document has no body, such as from empty string or redirect
-      @html = Nokogiri::HTML('<body />', nil, @options[:encoding]) if @html.css('body').length == 0
+      @html = Nokogiri::HTML('<body />', @url, @options[:encoding]) if @html.css('body').length == 0
 
       # Remove html comment tags
       @html.xpath('//comment()').each { |i| i.remove }
@@ -123,7 +126,8 @@ module Readability
         :trimRe => /^\s+|\s+$/,
         :normalizeRe => /\s{2,}/,
         :killBreaksRe => /(<br\s*\/?>(\s|&nbsp;?)*){1,}/,
-        :videoRe => /http:\/\/(www\.)?(youtube|vimeo)\.com/i
+        :videoRe => /http:\/\/(www\.)?(youtube|vimeo)\.com/i,
+        :hasUrlAttrTag => /a|frame|iframe|img/i
     }
 
     def title
@@ -187,6 +191,7 @@ module Readability
       article = get_article(@candidates, @best_candidate)
 
       cleaned_article = sanitize(article, @candidates, options)
+      puts cleaned_article.class
       if article.text.strip.length < options[:retry_length]
         if @remove_unlikely_candidates
           @remove_unlikely_candidates = false
@@ -361,6 +366,19 @@ module Readability
 #              child.swap("<p>#{child.text}</p>")
 #            end
 #          end
+        end
+      end
+    end
+
+    def make_absolute_url!
+      @html.css("*").each do |elem|
+        if elem.name.downcase.match REGEXES[:hasUrlAttrTag]
+          attr_name = elem.attr("src") ? "src" : "href"
+          if candidate = elem.attr(attr_name)
+            if URI(candidate).relative?
+              elem.set_attribute attr_name URI.join(@url, candidate).to_s
+            end
+          end
         end
       end
     end
